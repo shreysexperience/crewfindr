@@ -1,303 +1,302 @@
 from flask import Flask, request, redirect
-import datetime
+import time, random, math
 
 app = Flask(__name__)
 
-groups = {"main": []}
-alerts = []
+members = []
+signals = []
 
-def layout(content, active="pack"):
+# ---------------------------
+# HELPERS
+# ---------------------------
+def gen_location():
+    return 19.07 + random.uniform(-0.005, 0.005), 72.87 + random.uniform(-0.005, 0.005)
+
+def distance(a, b):
+    return math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2)
+
+def predict_risk(m):
+    if not m["last"]:
+        return "🟢 Safe"
+
+    delay = time.time() - m["last"]
+    coords = [(x["lat"], x["lon"]) for x in members if x["lat"]]
+
+    if not coords:
+        return "🟢 Safe"
+
+    center = (
+        sum(c[0] for c in coords)/len(coords),
+        sum(c[1] for c in coords)/len(coords)
+    )
+
+    dist = distance((m["lat"], m["lon"]), center)
+
+    score = dist*10000 + delay + (100 - m["battery"])
+
+    if m["status"] == "Danger":
+        return "🔴 Danger"
+
+    if score > 150: return "🔴 High Risk"
+    if score > 80: return "🟡 Drifting"
+    return "🟢 Safe"
+
+# ---------------------------
+# UI
+# ---------------------------
+def layout(content, active=""):
     return f"""
     <html>
     <head>
-    <title>CrewFindr</title>
-
-    <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&display=swap" rel="stylesheet">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Inter:wght@300;500;700&display=swap" rel="stylesheet">
 
     <style>
-    body {{
-        margin:0;
-        background:#000;
-        color:#fff;
-        font-family:-apple-system, BlinkMacSystemFont;
+    body {{ margin:0; background:#0a0a0a; color:white; font-family:Inter; }}
+
+    .nav {{
+        position:fixed; top:20px; left:50%; transform:translateX(-50%);
+        width:90%; max-width:1100px;
+        display:flex; justify-content:space-between;
+        padding:14px 20px;
+        background:rgba(255,255,255,0.08);
+        backdrop-filter:blur(30px);
+        border-radius:20px;
+        border:1px solid rgba(255,255,255,0.2);
     }}
 
-    .container {{
-        width:390px;
-        margin:auto;
-        padding:20px;
-        padding-bottom:120px;
+    .logo {{ font-family:"Instrument Serif"; font-size:22px; }}
+
+    .links a {{
+        margin-left:16px;
+        font-family:"Instrument Serif";
+        color:white;
+        text-decoration:none;
+        opacity:0.5;
     }}
 
-    h1 {{
-        font-family:'Instrument Serif';
-        font-size:40px;
-        letter-spacing:1px;
-        margin:0;
-    }}
+    .active {{ opacity:1 !important; font-weight:700; }}
 
-    p {{
-        color:#8E8E93;
-        margin-top:4px;
-    }}
+    .container {{ margin:120px auto; max-width:1100px; padding:20px; }}
+
+    h1 {{ font-family:"Instrument Serif"; font-size:52px; }}
 
     .card {{
         background:rgba(255,255,255,0.05);
-        border-radius:20px;
         padding:18px;
-        margin-top:16px;
-        border:1px solid rgba(255,255,255,0.08);
+        margin-top:14px;
+        border-radius:16px;
+        border:1px solid rgba(255,255,255,0.1);
     }}
 
     input, select {{
-        width:100%;
-        height:50px;
-        border:none;
-        border-radius:14px;
-        background:#111;
-        color:white;
-        padding:0 14px;
-        margin-top:12px;
+        width:100%; padding:12px; margin-top:10px;
+        background:#111; border:none; color:white;
+        border-radius:10px;
     }}
 
-    button {{
-        width:100%;
-        height:50px;
-        border:none;
-        border-radius:14px;
-        margin-top:12px;
-        font-family:'Instrument Serif';
-        letter-spacing:1px;
-        font-weight:600;
+    .btn {{
+        margin-top:10px; padding:12px;
+        width:100%; background:white; color:black;
+        border:none; border-radius:10px;
         cursor:pointer;
     }}
 
-    .primary {{
-        background:white;
-        color:black;
-    }}
+    .danger {{ border-left:4px solid red; }}
+    .warn {{ border-left:4px solid orange; }}
+    .safe {{ border-left:4px solid green; }}
 
-    .danger {{
-        background:#FF3B30;
-        color:white;
-    }}
-
-    .status-safe {{ color:#34C759; }}
-    .status-careful {{ color:#FF9F0A; }}
-    .status-danger {{ color:#FF3B30; }}
-
-    .nav {{
-        position:fixed;
-        bottom:20px;
-        left:50%;
-        transform:translateX(-50%);
-        width:360px;
-        display:flex;
-        background:rgba(255,255,255,0.08);
-        backdrop-filter:blur(20px);
-        border-radius:24px;
-        padding:8px;
-    }}
-
-    .nav a {{
-        flex:1;
-        text-align:center;
-        text-decoration:none;
-        color:#8E8E93;
-        padding:10px;
-        font-family:'Instrument Serif';
-    }}
-
-    .active {{
-        background:rgba(255,255,255,0.15);
-        color:white;
-        border-radius:12px;
-    }}
-
-    .member {{
-        display:flex;
-        justify-content:space-between;
-        align-items:center;
-    }}
-
-    .empty {{
-        text-align:center;
-        margin-top:40px;
-        color:#666;
-    }}
     </style>
 
+    <script>
+    function openMap(url) {{
+        if(confirm("Allow location access & open map?")) {{
+            window.open(url, "_blank");
+        }}
+    }}
+
+    function vibrate() {{
+        if(navigator.vibrate) navigator.vibrate([200,100,200]);
+    }}
+    </script>
+
     </head>
+
     <body>
 
-    <div class="container">
-    {content}
+    <div class="nav">
+        <div class="logo">CrewFindr</div>
+        <div class="links">
+            <a href="/pack" class="{ 'active' if active=='pack' else '' }">Pack</a>
+            <a href="/track" class="{ 'active' if active=='track' else '' }">Track</a>
+            <a href="/alerts" class="{ 'active' if active=='alerts' else '' }">Alerts</a>
+            <a href="/chat" class="{ 'active' if active=='chat' else '' }">Signals</a>
+            <a href="/sos" class="{ 'active' if active=='sos' else '' }">SOS</a>
+        </div>
     </div>
 
-    <div class="nav">
-        <a href="/" class="{ 'active' if active=='pack' else ''}">Pack</a>
-        <a href="/alerts" class="{ 'active' if active=='alerts' else ''}">Alerts</a>
-        <a href="/group" class="{ 'active' if active=='group' else ''}">Group</a>
-        <a href="/sos" class="{ 'active' if active=='sos' else ''}">SOS</a>
+    <div class="container">
+        {content}
     </div>
 
     </body>
     </html>
     """
 
-# ---------------- PACK DASHBOARD ----------------
-@app.route("/", methods=["GET","POST"])
+# ---------------------------
+# ROUTES
+# ---------------------------
+@app.route("/")
+def home():
+    return layout("""
+    <h1>CrewFindr</h1>
+    <p>AI-powered crowd coordination</p>
+    <a href="/pack"><button class="btn">Start</button></a>
+    """)
+
+@app.route("/pack", methods=["GET","POST"])
 def pack():
-
     if request.method == "POST":
-        name = request.form["name"]
-        status = request.form["status"]
-
-        for m in groups["main"]:
-            if m["name"] == name:
-                m["status"] = status
-                m["time"] = datetime.datetime.now().strftime("%H:%M")
-
-                if status == "danger":
-                    alerts.append({
-                        "name": name,
-                        "time": m["time"]
-                    })
-
-    content = "<h1>CrewFindr</h1><p>Stay connected with your crew</p>"
-
-    # MEMBERS
-    if not groups["main"]:
-        content += "<div class='empty'>No members yet → Create group</div>"
-    else:
-        for m in groups["main"]:
-            cls = "status-safe"
-            if m["status"] == "careful":
-                cls = "status-careful"
-            if m["status"] == "danger":
-                cls = "status-danger"
-
-            content += f"""
-            <div class="card member">
-                <div>
-                    <b>{m['name']}</b><br>
-                    <small>{m['time']}</small>
-                </div>
-                <div class="{cls}">{m['status']}</div>
-            </div>
-            """
-
-    # UPDATE STATUS
-    content += """
-    <div class="card">
-    <form method="POST">
-        <input name="name" placeholder="Your name">
-        <select name="status">
-            <option value="safe">Safe</option>
-            <option value="careful">Careful</option>
-            <option value="danger">Danger</option>
-        </select>
-        <button class="primary">Update Status</button>
-    </form>
-    </div>
-    """
-
-    return layout(content, "pack")
-
-
-# ---------------- GROUP ----------------
-@app.route("/group", methods=["GET","POST"])
-def group():
-
-    if request.method == "POST":
-        name = request.form["name"]
-        groups["main"].append({
-            "name": name,
-            "status": "safe",
-            "time": datetime.datetime.now().strftime("%H:%M")
+        members.append({
+            "name": request.form["name"],
+            "lat": None,
+            "lon": None,
+            "battery": 100,
+            "status": "Safe",
+            "last": None
         })
+        return redirect("/pack")
 
-    content = """
-    <h1>Create Group</h1>
-    <p>Add people going with you</p>
+    cards = "".join([f"<div class='card'>{m['name']}</div>" for m in members])
 
-    <div class="card">
+    cont = ""
+    if len(members) >= 2:
+        cont = "<a href='/track'><button class='btn'>Start Tracking</button></a>"
+
+    return layout(f"""
+    <h1>Create Pack</h1>
     <form method="POST">
-        <input name="name" placeholder="Member name" required>
-        <button class="primary">Add Member</button>
+        <input name="name" placeholder="Name">
+        <button class="btn">Add</button>
     </form>
-    </div>
-    """
+    {cards}
+    {cont}
+    ""","pack")
 
-    for m in groups["main"]:
-        content += f"<div class='card'>{m['name']}</div>"
+@app.route("/track")
+def track():
+    cards = ""
 
-    # CONTINUE BUTTON (FIXED)
-    if groups["main"]:
-        content += """
-        <div class="card">
-            <a href="/">
-                <button class="primary">Continue to Pack</button>
-            </a>
+    for m in members:
+        if not m["lat"]:
+            m["lat"], m["lon"] = gen_location()
+
+        m["lat"], m["lon"] = gen_location()
+        m["last"] = time.time()
+
+        risk = predict_risk(m)
+        link = f"https://www.google.com/maps?q={m['lat']},{m['lon']}"
+
+        cls = "safe"
+        if "Danger" in risk:
+            cls = "danger"
+        elif "Drifting" in risk:
+            cls = "warn"
+
+        cards += f"""
+        <div class="card {cls}">
+            <h3>{m['name']}</h3>
+            <p>{risk}</p>
+            <p>🔋 {m['battery']}%</p>
+            <button class="btn" onclick="openMap('{link}')">Open Map</button>
         </div>
         """
 
-    return layout(content, "group")
+    return layout(f"<h1>Live Tracking</h1>{cards}","track")
 
-
-# ---------------- ALERTS ----------------
-@app.route("/alerts")
-def alerts_page():
-
-    content = "<h1>Alerts</h1><p>Live danger signals</p>"
-
-    if not alerts:
-        content += "<div class='empty'>No alerts yet</div>"
-    else:
-        for a in alerts[::-1]:
-            content += f"""
-            <div class="card">
-                <b>{a['name']}</b><br>
-                <small>{a['time']}</small>
-            </div>
-            """
-
-    return layout(content, "alerts")
-
-
-# ---------------- SOS ----------------
-@app.route("/sos", methods=["GET","POST"])
-def sos():
-
+@app.route("/alerts", methods=["GET","POST"])
+def alerts():
     if request.method == "POST":
         name = request.form["name"]
 
-        alerts.append({
-            "name": name,
-            "time": datetime.datetime.now().strftime("%H:%M")
-        })
+        for m in members:
+            if m["name"] == name:
+                m["battery"] = int(request.form["battery"])
+                m["status"] = request.form["status"]
 
-    content = """
-    <h1>SOS</h1>
-    <p>Send emergency signal</p>
+        return redirect("/alerts")
 
-    <div class="card">
+    options = "".join([f"<option>{m['name']}</option>" for m in members])
+
+    cards = ""
+
+    for m in members:
+        risk = predict_risk(m)
+
+        cards += f"""
+        <div class="card">
+            <h3>{m['name']}</h3>
+            <p>{risk}</p>
+            <p>Status: {m['status']}</p>
+            <p>🔋 {m['battery']}%</p>
+        </div>
+        """
+
+    return layout(f"""
+    <h1>Alerts Control Panel</h1>
+
     <form method="POST">
-        <input name="name" placeholder="Your name" required>
-        <button class="danger">Send SOS</button>
+        <select name="name">{options}</select>
+        <input type="number" name="battery" placeholder="Battery %">
+        <select name="status">
+            <option>Safe</option>
+            <option>Careful</option>
+            <option>Danger</option>
+        </select>
+        <button class="btn" onclick="vibrate()">Update</button>
     </form>
-    </div>
 
+    {cards}
+    ""","alerts")
+
+@app.route("/chat", methods=["GET","POST"])
+def chat():
+    if request.method == "POST":
+        signals.append({
+            "name": request.form["name"],
+            "text": request.form["text"],
+            "time": time.strftime("%H:%M")
+        })
+        return redirect("/chat")
+
+    options = "".join([f"<option>{m['name']}</option>" for m in members])
+
+    ui = "".join([f"""
     <div class="card">
-        <a href="tel:112">
-            <button class="danger">Call Emergency</button>
-        </a>
+        <b>{s['name']}</b> • {s['time']}
+        <p>{s['text']}</p>
     </div>
-    """
+    """ for s in signals[::-1]])
 
-    return layout(content, "sos")
+    return layout(f"""
+    <h1>Signal Board</h1>
 
+    <form method="POST">
+        <select name="name">{options}</select>
+        <input name="text" placeholder="Send signal...">
+        <button class="btn">Broadcast</button>
+    </form>
 
-# ---------------- RUN ----------------
+    {ui}
+    ""","chat")
+
+@app.route("/sos")
+def sos():
+    return layout("""
+    <h1>Emergency SOS</h1>
+    <button class="btn" onclick="vibrate()">SEND SOS</button>
+    ""","sos")
+
+# ---------------------------
 if __name__ == "__main__":
     app.run(debug=True)
